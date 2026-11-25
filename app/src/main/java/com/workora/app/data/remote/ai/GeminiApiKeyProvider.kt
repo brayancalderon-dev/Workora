@@ -1,0 +1,240 @@
+package com.workora.app.data.remote.ai
+
+import android.util.Base64
+import android.util.Log
+import com.workora.app.BuildConfig
+import com.workora.app.domain.repository.AiImagePayload
+import com.workora.app.domain.repository.AiProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.URL
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import javax.inject.Inject
+import kotlin.random.Random
+
+class GeminiApiKeyProvider @Inject constructor() : AiProvider {
+    override suspend fun generateJson(prompt: String, image: AiImagePayload?): String = generate(prompt, true, image)
+    override suspend fun generateText(prompt: String): String = generate(prompt, false, null)
+
+    private suspend fun generate(prompt: String, jsonResponse: Boolean, image: AiImagePayload?): String {
+        require(prompt.isNotBlank()) { "No hay contenido para enviar a Gemini." }
+        require(image == null || (image.bytes.isNotEmpty() && image.bytes.size <= MAX_IMAGE_BYTES && image.mimeType in SUPPORTED_MIME_TYPES)) {
+            "La imagen de la vacante está vacía, supera 8 MiB o usa un formato no compatible."
+        }
+        val apiKey = BuildConfig.GEMINI_API_KEY.trim().takeIf(String::isNotEmpty)
+            ?: throw IllegalStateException("Gemini no está configurado. Añade gemini.apiKey a local.properties para compilar Debug.")
+
+        return try {
+            withTimeout(TOTAL_TIMEOUT_MS) {
+                var attempt = 0
+                while (true) {
+                    attempt++
+                    val started = System.nanoTime()
+                    val result = try {
+                        runInterruptible(Dispatchers.IO) { request(prompt, apiKey, jsonResponse, image) }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        val elapsed = elapsedMs(started)
+                        Log.w(TAG, "model=$MODEL endpoint=$ENDPOINT_PATH attempt=$attempt elapsedMs=$elapsed type=${error.javaClass.simpleName} networkFailure=true")
+                        if (error is SocketTimeoutException || error is IOException) {
+                            if (attempt < MAX_ATTEMPTS) {
+                                delay(backoff(attempt))
+                                continue
+                            }
+                            throw IllegalStateException("No se pudo conectar con Gemini tras $attempt intentos. Revisa tu conexión a internet.")
+                        }
+                        throw error
+                    }
+
+                    val elapsed = elapsedMs(started)
+                    if (result.status !in 200..299) {
+                        val apiError = parseApiError(result.body)
+                        Log.w(TAG, "model=$MODEL endpoint=$ENDPOINT_PATH attempt=$attempt elapsedMs=$elapsed http=${result.status} errorType=${apiError.status ?: "unknown"} message=${safeLog(apiError.message)}")
+                        
+                        if (result.status in RETRYABLE_STATUS && attempt < MAX_ATTEMPTS) {
+                            val waitMs = result.retryAfterMs ?: backoff(attempt)
+                            if (waitMs < TOTAL_TIMEOUT_MS) {
+                                delay(waitMs)
+                                continue
+                            }
+                        }
+                        throw IllegalStateException(userMessage(result.status, attempt))
+                    }
+
+                    if (result.body.isBlank()) {
+                        Log.e(TAG, "model=$MODEL attempt=$attempt elapsedMs=$elapsed http=${result.status} bodyEmpty=true")
+                        if (attempt < MAX_ATTEMPTS) {
+                            delay(backoff(attempt))
+                            continue
+                        }
+                        throw IllegalStateException("El servicio de IA devolvió una respuesta vacía. Inténtalo nuevamente.")
+                    }
+
+                    try {
+                        val response = Json.parseToJsonElement(result.body).jsonObject
+                        response["promptFeedback"]?.jsonObject?.let { feedback ->
+                            val blockReason = feedback["blockReason"]?.jsonPrimitive?.contentOrNull
+                            if (!blockReason.isNullOrBlank()) {
+                                Log.w(TAG, "model=$MODEL attempt=$attempt elapsedMs=$elapsed blocked=true reason=${safeLog(blockReason)}")
+                                throw IllegalStateException("Google bloqueó el contenido de la solicitud ($blockReason). Revisa el texto o la imagen e inténtalo nuevamente.")
+                            }
+                        }
+
+                        val candidates = response["candidates"]?.jsonArray.orEmpty()
+                        val candidate = candidates.firstOrNull()?.jsonObject
+                            ?: throw IllegalStateException("El servicio de IA no devolvió candidatos de respuesta. Inténtalo nuevamente.")
+                        
+                        val finishReason = candidate["finishReason"]?.jsonPrimitive?.contentOrNull
+                        if (finishReason != null && finishReason !in setOf("STOP", "MAX_TOKENS")) {
+                            Log.w(TAG, "model=$MODEL attempt=$attempt elapsedMs=$elapsed finishReason=${safeLog(finishReason)}")
+                            throw IllegalStateException("El análisis no pudo completarse (motivo: $finishReason). Inténtalo de nuevo.")
+                        }
+
+                        val text = candidate["content"]?.jsonObject?.get("parts")?.jsonArray.orEmpty().textFromParts()
+                            ?: throw IllegalStateException("El servicio de IA no devolvió texto utilizable para el análisis.")
+
+                        Log.i(TAG, "model=$MODEL endpoint=$ENDPOINT_PATH attempt=$attempt elapsedMs=$elapsed http=${result.status} responseBytes=${result.body.toByteArray().size} success=true")
+                        return@withTimeout text
+                    } catch (error: IllegalStateException) {
+                        throw error
+                    } catch (error: Exception) {
+                        Log.e(TAG, "model=$MODEL attempt=$attempt elapsedMs=$elapsed responseJsonError=${error.javaClass.simpleName}")
+                        if (attempt < MAX_ATTEMPTS) {
+                            delay(backoff(attempt))
+                            continue
+                        }
+                        throw IllegalStateException("La respuesta del servicio de IA no fue válida. Inténtalo nuevamente.")
+                    }
+                }
+                @Suppress("UNREACHABLE_CODE") throw IllegalStateException("No se pudo completar la solicitud con el servicio de IA.")
+            }
+        } catch (cancelled: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw cancelled
+            Log.w(TAG, "model=$MODEL endpoint=$ENDPOINT_PATH timeoutMs=$TOTAL_TIMEOUT_MS timeout=true")
+            throw IllegalStateException("El análisis tardó demasiado en responder (Timeout). Inténtalo nuevamente.")
+        }
+    }
+
+    private fun request(prompt: String, apiKey: String, jsonResponse: Boolean, image: AiImagePayload?): HttpResult {
+        val parts = buildJsonArray {
+            image?.let { payload ->
+                add(buildJsonObject {
+                    put("inline_data", buildJsonObject {
+                        put("mime_type", JsonPrimitive(payload.mimeType))
+                        put("data", JsonPrimitive(Base64.encodeToString(payload.bytes, Base64.NO_WRAP)))
+                    })
+                })
+            }
+            add(buildJsonObject { put("text", JsonPrimitive(prompt)) })
+        }
+        val requestBody = buildJsonObject {
+            put("contents", buildJsonArray { add(buildJsonObject { put("parts", parts) }) })
+            if (jsonResponse) put("generationConfig", buildJsonObject {
+                put("responseMimeType", JsonPrimitive("application/json"))
+            })
+        }.toString()
+
+        val connection = (URL(GENERATE_CONTENT_URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            instanceFollowRedirects = false
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("x-goog-api-key", apiKey)
+        }
+
+        return try {
+            connection.outputStream.use { it.write(requestBody.toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText().take(MAX_RESPONSE_CHARS) }.orEmpty()
+            HttpResult(status, body, parseRetryAfter(connection.getHeaderField("Retry-After")))
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun List<JsonElement>.textFromParts(): String? = mapNotNull { part ->
+        val obj = runCatching { part.jsonObject }.getOrNull() ?: return@mapNotNull null
+        if (obj["thought"]?.jsonPrimitive?.booleanOrNull == true) null else obj["text"]?.jsonPrimitive?.contentOrNull
+    }.joinToString("").takeIf(String::isNotBlank)
+
+    private fun parseApiError(body: String): ApiError = runCatching {
+        val error = Json.parseToJsonElement(body).jsonObject["error"]?.jsonObject
+        ApiError(error?.get("message")?.jsonPrimitive?.contentOrNull.orEmpty(), error?.get("status")?.jsonPrimitive?.contentOrNull)
+    }.getOrDefault(ApiError("", null))
+
+    private fun safeLog(value: String): String = value
+        .replace(Regex("AIza[0-9A-Za-z_-]{20,}"), "[redacted]")
+        .replace(Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"), "[email]")
+        .replace(Regex("(?<!\\d)(?:\\+?\\d[\\d ()-]{7,}\\d)(?!\\d)"), "[number]")
+        .replace(Regex("[\\r\\n\\t]"), " ")
+        .take(400)
+
+    private fun parseRetryAfter(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        value.toLongOrNull()?.let { seconds ->
+            if (seconds < 0) return null
+            return if (seconds > Long.MAX_VALUE / 1_000L) Long.MAX_VALUE else seconds * 1_000L
+        }
+        return runCatching {
+            (ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(0)
+        }.getOrNull()
+    }
+
+    private fun backoff(attempt: Int): Long = BASE_BACKOFF_MS * (1L shl (attempt - 1)) + Random.nextLong(0, JITTER_MS + 1)
+    private fun elapsedMs(started: Long) = (System.nanoTime() - started) / 1_000_000
+
+    private fun userMessage(status: Int, attempts: Int) = when (status) {
+        400 -> "El formato de la solicitud no fue aceptado (HTTP 400)."
+        401, 403 -> "Acceso no autorizado al servicio de IA (HTTP $status). Verifica la configuración del proyecto."
+        429 -> "El servicio de IA alcanzó el límite de cuota o solicitudes (HTTP 429). Inténtalo de nuevo en unos momentos."
+        503 -> "El servicio de IA está temporalmente no disponible (HTTP 503) tras $attempts intentos. Inténtalo más tarde."
+        in RETRYABLE_STATUS -> "El servicio de IA está temporalmente ocupado (HTTP $status) tras $attempts intentos. Inténtalo de nuevo."
+        else -> "El servicio de IA no pudo completar la solicitud (HTTP $status)."
+    }
+
+    private data class HttpResult(val status: Int, val body: String, val retryAfterMs: Long?)
+    private data class ApiError(val message: String, val status: String?)
+
+    private companion object {
+        const val TAG = "WorkoraGemini"
+        const val MODEL = "gemini-3.8-flash"
+        const val ENDPOINT_PATH = "/v1beta/models/$MODEL:generateContent"
+        const val GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com$ENDPOINT_PATH"
+        const val TOTAL_TIMEOUT_MS = 40_000L
+        const val CONNECT_TIMEOUT_MS = 10_000
+        const val READ_TIMEOUT_MS = 25_000
+        const val BASE_BACKOFF_MS = 1_000L
+        const val JITTER_MS = 250L
+        const val MAX_ATTEMPTS = 3
+        const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+        const val MAX_RESPONSE_CHARS = 64 * 1024
+        val RETRYABLE_STATUS = setOf(408, 429, 500, 502, 503, 504)
+        val SUPPORTED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif")
+    }
+}

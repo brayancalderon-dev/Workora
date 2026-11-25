@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "717749256314",
+    "project_id": "workora-ai-57ae2",
+    "storage_bucket": "workora-ai-57ae2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:717749256314:android:c2ad663b7f953132687bc3",
+        "android_client_info": {
+          "package_name": "com.workora.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCAbEqdNZ5DUniGg3DXCpQ3pU-DmLd6ARA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
