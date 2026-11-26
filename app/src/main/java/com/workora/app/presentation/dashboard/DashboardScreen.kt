@@ -38,6 +38,7 @@ fun DashboardScreen(
 ) {
     val scrollState = rememberScrollState()
     val profile by viewModel.profile.collectAsStateWithLifecycle()
+    val gmailSession by viewModel.gmailSession.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -52,7 +53,11 @@ fun DashboardScreen(
             Spacer(modifier = Modifier.height(16.dp))
             ProfileSection(profile, onNavigateToProfile)
             Spacer(modifier = Modifier.height(16.dp))
-            ConnectionsSection(onNavigateToGmail = onNavigateToGmail, onNavigateToJobs = onNavigateToJobs)
+            ConnectionsSection(
+                isGmailConnected = gmailSession.isAuthorized,
+                onNavigateToGmail = onNavigateToGmail,
+                onNavigateToJobs = onNavigateToJobs
+            )
             Spacer(modifier = Modifier.height(24.dp))
             ActivitySummarySection()
             Spacer(modifier = Modifier.height(24.dp))
@@ -204,27 +209,26 @@ private fun ProfileSection(profile: Profile?, onClick: () -> Unit) {
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
                 )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Administra tu hoja de vida y tu perfil para analizar vacantes.",
+                    fontSize = 11.sp,
+                    color = Color.Gray,
+                    lineHeight = 13.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
                 if (profile != null) {
                     Text(
                         text = "CV: ${profile.pdfFileName ?: "Sin archivo"}",
                         fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = Color.DarkGray
-                    )
-                    Text(
-                        text = "Última actualización: Hoy",
-                        fontSize = 11.sp,
-                        color = Color.Gray
                     )
                 } else {
                     Text(
                         text = "Aún no has configurado tu perfil",
                         fontSize = 12.sp,
                         color = Color.DarkGray
-                    )
-                    Text(
-                        text = "Pulsa aquí para comenzar",
-                        fontSize = 11.sp,
-                        color = Color.Gray
                     )
                 }
             }
@@ -248,6 +252,7 @@ private fun ProfileSection(profile: Profile?, onClick: () -> Unit) {
 
 @Composable
 private fun ConnectionsSection(
+    isGmailConnected: Boolean,
     onNavigateToGmail: () -> Unit,
     onNavigateToJobs: () -> Unit
 ) {
@@ -258,6 +263,7 @@ private fun ConnectionsSection(
         ConnectionCard(
             modifier = Modifier.weight(1f),
             title = "Hiring Room",
+            subtitle = "Busca empleos y analiza vacantes afines.",
             icon = Icons.Outlined.Business,
             isConnected = true,
             onClick = onNavigateToJobs
@@ -265,8 +271,9 @@ private fun ConnectionsSection(
         ConnectionCard(
             modifier = Modifier.weight(1f),
             title = "Gmail",
+            subtitle = "Genera borradores de correo para postular.",
             icon = Icons.Outlined.Email,
-            isConnected = false,
+            isConnected = isGmailConnected,
             onClick = onNavigateToGmail
         )
     }
@@ -276,57 +283,83 @@ private fun ConnectionsSection(
 private fun ConnectionCard(
     modifier: Modifier = Modifier,
     title: String,
+    subtitle: String,
     icon: ImageVector,
     isConnected: Boolean,
     onClick: () -> Unit = {}
 ) {
     Card(
-        modifier = modifier.clickable { onClick() },
+        modifier = modifier
+            .height(112.dp)
+            .clickable { onClick() },
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = PrimaryBlue,
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-                if (isConnected) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFE8F0FE)),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.CheckCircle,
+                            imageVector = icon,
                             contentDescription = null,
-                            tint = Color(0xFF4CAF50),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Conectado",
-                            fontSize = 10.sp,
-                            color = Color(0xFF4CAF50)
+                            tint = PrimaryBlue,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = title,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
                 }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = Color.Gray,
+                    modifier = Modifier.size(18.dp)
+                )
             }
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = Color.Gray
+
+            Text(
+                text = subtitle,
+                fontSize = 10.sp,
+                lineHeight = 12.sp,
+                color = Color.Gray,
+                maxLines = 2
             )
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (isConnected) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                    contentDescription = null,
+                    tint = if (isConnected) Color(0xFF287A45) else Color(0xFFE65100),
+                    modifier = Modifier.size(12.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = if (isConnected) "Conectado" else "Desconectado",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isConnected) Color(0xFF287A45) else Color(0xFFE65100)
+                )
+            }
         }
     }
 }
@@ -349,14 +382,16 @@ private fun ActivitySummarySection() {
                 modifier = Modifier.weight(1f),
                 icon = Icons.Outlined.WorkOutline,
                 iconTint = PrimaryBlue,
-                title = "Vacantes\nevaluadas",
+                title = "Vacantes evaluadas",
+                subtitle = "Consulta las ofertas que Workora ha analizado.",
                 value = "12"
             )
             SummaryCard(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Outlined.Verified,
                 iconTint = Color(0xFF4CAF50),
-                title = "Alta\ncompatibilidad",
+                title = "Alta compatibilidad",
+                subtitle = "Revisa las vacantes que mejor coinciden con tu perfil.",
                 value = "4"
             )
         }
@@ -369,14 +404,16 @@ private fun ActivitySummarySection() {
                 modifier = Modifier.weight(1f),
                 icon = Icons.Outlined.Drafts,
                 iconTint = Color(0xFFFF9800),
-                title = "Borradores\nen Gmail",
+                title = "Borradores en Gmail",
+                subtitle = "Consulta los correos de postulación que has generado.",
                 value = "3"
             )
             SummaryCard(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Outlined.Send,
                 iconTint = Color(0xFF6C63FF),
-                title = "Postulaciones\nregistradas",
+                title = "Postulaciones registradas",
+                subtitle = "Lleva un seguimiento de las oportunidades a las que te has postulado.",
                 value = "2"
             )
         }
@@ -389,40 +426,56 @@ private fun SummaryCard(
     icon: ImageVector,
     iconTint: Color,
     title: String,
+    subtitle: String,
     value: String
 ) {
     Card(
-        modifier = modifier,
+        modifier = modifier.height(116.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = iconTint,
-                modifier = Modifier.size(32.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = title,
-                fontSize = 12.sp,
-                lineHeight = 14.sp,
-                color = Color.DarkGray,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = value,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold,
-                color = PrimaryBlue
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(24.dp)
+                )
+                Text(
+                    text = value,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = PrimaryBlue
+                )
+            }
+            Column {
+                Text(
+                    text = title,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.DarkGray,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                    color = Color.Gray,
+                    maxLines = 2
+                )
+            }
         }
     }
 }

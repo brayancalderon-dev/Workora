@@ -42,11 +42,32 @@ class ProfileViewModel @Inject constructor(
                 FileHelper.extractPdfText(context, savedFileName)
             }.trim()
             val currentProfile = profile.value ?: Profile(name = "Usuario", summary = "")
+            val detectedName = if (currentProfile.name == "Usuario" || currentProfile.name.isBlank()) {
+                extractNameFromCv(extractedText) ?: "Usuario"
+            } else {
+                currentProfile.name
+            }
             repository.saveProfile(currentProfile.copy(
+                name = detectedName,
                 pdfFileName = savedFileName,
                 summary = extractedText,
                 lastUpdated = System.currentTimeMillis()
             ))
         }
+    }
+
+    private fun extractNameFromCv(cvText: String): String? {
+        val lines = cvText.lines().map { it.trim() }.filter { it.isNotBlank() }.take(8)
+        for (line in lines) {
+            if (!line.contains("@") && !line.contains("http") && !line.contains("CV") &&
+                !line.contains("Curriculum", ignoreCase = true) && !line.contains("Hoja de Vida", ignoreCase = true) &&
+                !line.contains("Perfil", ignoreCase = true) && !line.contains("Experiencia", ignoreCase = true) &&
+                line.matches(Regex("^[A-ZÁÉÍÓÚÑa-záréiouseñ\\s.'-]{3,50}$"))
+            ) {
+                val words = line.split(Regex("\\s+"))
+                if (words.size in 2..4) return line
+            }
+        }
+        return null
     }
 }

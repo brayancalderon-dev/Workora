@@ -18,6 +18,9 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
@@ -367,6 +370,141 @@ fun GmailSettingsScreen(
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (copiedToast) "¡Diagnóstico copiado!" else "Copiar diagnóstico", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Signature Configuration Card
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = "Firma personal en los borradores",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = PrimaryBlue
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = "Incluir tu nombre, teléfono y correo al final de cada borrador",
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                        }
+                        Switch(
+                            checked = uiState.includeSignature,
+                            onCheckedChange = { viewModel.updateIncludeSignature(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = PrimaryBlue
+                            )
+                        )
+                    }
+
+                    if (uiState.includeSignature) {
+                        Spacer(Modifier.height(16.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(16.dp))
+
+                        val textFieldColors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(0xFF111827),
+                            unfocusedTextColor = Color(0xFF111827),
+                            disabledTextColor = Color(0xFF111827),
+                            focusedLabelColor = PrimaryBlue,
+                            unfocusedLabelColor = Color(0xFF4B5563),
+                            disabledLabelColor = Color(0xFF6B7280),
+                            focusedBorderColor = PrimaryBlue,
+                            unfocusedBorderColor = Color(0xFFD1D5DB),
+                            disabledBorderColor = Color(0xFFE5E7EB),
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color(0xFFFAFAFA),
+                            disabledContainerColor = Color(0xFFF3F4F6)
+                        )
+
+                        OutlinedTextField(
+                            value = uiState.signatureName,
+                            onValueChange = { newName ->
+                                viewModel.updateSignatureFields(newName, uiState.signaturePhone, uiState.signatureEmail)
+                            },
+                            enabled = uiState.isEditingSignature,
+                            label = { Text("Nombre completo") },
+                            placeholder = { Text("Ej. Brayan Calderón") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            colors = textFieldColors
+                        )
+
+                        Spacer(Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = uiState.signaturePhone,
+                            onValueChange = { newPhone ->
+                                viewModel.updateSignatureFields(uiState.signatureName, newPhone, uiState.signatureEmail)
+                            },
+                            enabled = uiState.isEditingSignature,
+                            label = { Text("Número de teléfono (opcional)") },
+                            placeholder = { Text("Ej. 0991234567") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            colors = textFieldColors
+                        )
+
+                        Spacer(Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = uiState.signatureEmail,
+                            onValueChange = { newEmail ->
+                                viewModel.updateSignatureFields(uiState.signatureName, uiState.signaturePhone, newEmail)
+                            },
+                            enabled = uiState.isEditingSignature,
+                            label = { Text("Correo electrónico personal (opcional)") },
+                            placeholder = { Text("Ej. mi_correo@email.com") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            colors = textFieldColors
+                        )
+
+                        Spacer(Modifier.height(16.dp))
+
+                        if (uiState.isEditingSignature) {
+                            Button(
+                                onClick = {
+                                    viewModel.saveSignatureConfig(
+                                        uiState.signatureName,
+                                        uiState.signaturePhone,
+                                        uiState.signatureEmail
+                                    )
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue, contentColor = Color.White),
+                                modifier = Modifier.fillMaxWidth().height(46.dp)
+                            ) {
+                                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Guardar configuración", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.setEditingSignature(true) },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = PrimaryBlue),
+                                modifier = Modifier.fillMaxWidth().height(46.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Editar firma", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

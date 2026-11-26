@@ -65,7 +65,12 @@ data class GmailUiState(
     val draftRecipientMissing: Boolean = false,
     val error: String? = null,
     val notice: String? = null,
-    val diagnosticsLog: String? = null
+    val diagnosticsLog: String? = null,
+    val includeSignature: Boolean = true,
+    val signatureName: String = "",
+    val signaturePhone: String = "",
+    val signatureEmail: String = "",
+    val isEditingSignature: Boolean = false
 )
 
 @HiltViewModel
@@ -85,14 +90,99 @@ class GmailViewModel @Inject constructor(
 
     private val _uiState = kotlinx.coroutines.flow.MutableStateFlow(GmailUiState(
         draftId = savedStateHandle[KEY_LAST_DRAFT_ID],
-        gmailAuthorized = prefs.getBoolean("gmail_connected", false)
+        gmailAuthorized = prefs.getBoolean("gmail_connected", false),
+        includeSignature = prefs.getBoolean("include_signature", true),
+        signatureName = prefs.getString("signature_name", "").orEmpty(),
+        signaturePhone = prefs.getString("signature_phone", "").orEmpty(),
+        signatureEmail = prefs.getString("signature_email", "").orEmpty()
     ))
     val uiState: StateFlow<GmailUiState> = _uiState
 
     private var gmailAccessToken: String? = null
 
     init {
+        viewModelScope.launch {
+            val profile = profileRepository.getProfile().first()
+            val cvText = profile?.summary.orEmpty()
+            
+            val savedName = prefs.getString("signature_name", null)
+            val savedPhone = prefs.getString("signature_phone", null)
+            val savedEmail = prefs.getString("signature_email", null)
+
+            val name = if (savedName.isNullOrBlank()) {
+                profile?.name?.takeIf { it.isNotBlank() && !it.equals("Usuario", ignoreCase = true) }
+                    ?: extractNameFromCv(cvText).orEmpty()
+            } else savedName
+
+            val phone = if (savedPhone.isNullOrBlank()) extractPhoneFromCv(cvText).orEmpty() else savedPhone
+            val email = if (savedEmail.isNullOrBlank()) extractEmailFromCv(cvText) ?: prefs.getString("gmail_account_email", "").orEmpty() else savedEmail
+
+            if (savedName.isNullOrBlank() || savedPhone.isNullOrBlank() || savedEmail.isNullOrBlank()) {
+                prefs.edit()
+                    .putString("signature_name", name)
+                    .putString("signature_phone", phone)
+                    .putString("signature_email", email)
+                    .apply()
+            }
+
+            _uiState.value = _uiState.value.copy(
+                signatureName = name,
+                signaturePhone = phone,
+                signatureEmail = email
+            )
+        }
+
+        viewModelScope.launch {
+            gmailDraftRepository.sessionState.collect { session ->
+                _uiState.value = _uiState.value.copy(
+                    gmailAuthorized = session.isAuthorized,
+                    connectedAccountEmail = session.accountEmail
+                )
+            }
+        }
+
         checkExistingGmailAuthorization()
+    }
+
+    fun updateIncludeSignature(include: Boolean) {
+        prefs.edit().putBoolean("include_signature", include).apply()
+        _uiState.value = _uiState.value.copy(includeSignature = include)
+    }
+
+    fun updateSignatureFields(name: String, phone: String, email: String) {
+        _uiState.value = _uiState.value.copy(
+            signatureName = name,
+            signaturePhone = phone,
+            signatureEmail = email
+        )
+    }
+
+    fun setEditingSignature(editing: Boolean) {
+        _uiState.value = _uiState.value.copy(isEditingSignature = editing, error = null)
+    }
+
+    fun saveSignatureConfig(name: String, phone: String, email: String) {
+        val trimmedName = name.trim()
+        if (_uiState.value.includeSignature && trimmedName.isBlank()) {
+            _uiState.value = _uiState.value.copy(error = "Ingresa tu nombre completo para guardar la firma.")
+            return
+        }
+
+        prefs.edit()
+            .putBoolean("include_signature", _uiState.value.includeSignature)
+            .putString("signature_name", trimmedName)
+            .putString("signature_phone", phone.trim())
+            .putString("signature_email", email.trim())
+            .apply()
+
+        _uiState.value = _uiState.value.copy(
+            signatureName = trimmedName,
+            signaturePhone = phone.trim(),
+            signatureEmail = email.trim(),
+            isEditingSignature = false,
+            error = null,
+            notice = "Configuración de firma guardada correctamente."
+        )
     }
 
     fun checkExistingGmailAuthorization() {
@@ -356,12 +446,14 @@ class GmailViewModel @Inject constructor(
     }
 
     fun changeGmailAccount() {
-        Log.d(TAG, "[CHANGE_ACCOUNT] Change account button clicked. Re-launching authorization consent...")
+        Log.d(TAG, "[SWITCH] Change account button clicked. Revoking cached token and launching Google Account Selector...")
         if (_uiState.value.isAuthorizing || _uiState.value.isCreatingDraft) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isAuthorizing = true, error = null, pendingAuthorization = null)
             try {
+                val oldToken = gmailAccessToken
                 gmailAccessToken = null
+                gmailDraftRepository.revoke(oldToken)
                 when (val result = gmailDraftRepository.authorize()) {
                     is GmailAuthorizationResult.Authorized -> {
                         gmailAccessToken = result.accessToken
@@ -380,7 +472,7 @@ class GmailViewModel @Inject constructor(
                     }
                 }
             } catch (error: Exception) {
-                Log.e(TAG, "[CHANGE_ACCOUNT] Failed to change account", error)
+                Log.e(TAG, "[SWITCH] Failed to change account", error)
                 _uiState.value = _uiState.value.copy(
                     isAuthorizing = false,
                     error = error.message ?: "No se pudo cambiar la cuenta de Google."
@@ -604,30 +696,40 @@ class GmailViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Personal data is sourced only from the saved profile name and CV text. Never let AI invent it.
-                val candidateName = currentProfile?.name?.trim()?.takeIf {
-                    it.isNotBlank() && !it.equals("Usuario", ignoreCase = true)
-                }
-                val candidatePhone = Regex("(?<!\\d)(?:\\+?593|0)9\\d{8}(?!\\d)").find(cvText)?.value
-                val candidateEmail = Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}").find(cvText)?.value
-
-                Log.d(TAG, "[CV] Signature data validated: name=${!candidateName.isNullOrBlank()}, phone=${!candidatePhone.isNullOrBlank()}, email=${!candidateEmail.isNullOrBlank()}")
-
-                val signatureBuilder = StringBuilder("\n\nSaludos cordiales,\n\n")
-                listOf(candidateName, candidatePhone, candidateEmail)
-                    .filterNot { it.isNullOrBlank() }
-                    .forEach { signatureBuilder.append(it).append("\n") }
-
-                // Remove any AI-generated signature/contact section. Do not replace fabricated data with guessed values.
                 val cleanBody = email.body
-                    .substringBefore("Saludos cordiales,")
-                    .substringBefore("Atentamente,")
-                    .substringBefore("Un saludo,")
+                    .substringBefore("Saludos cordiales,").substringBefore("Saludos cordiales.").substringBefore("Saludos cordiales")
+                    .substringBefore("Atentamente,").substringBefore("Atentamente.").substringBefore("Atentamente")
+                    .substringBefore("Un saludo,").substringBefore("Un saludo.").substringBefore("Un saludo")
                     .trim()
                     .replace(Regex("\\n{3,}"), "\n\n")
                     .trim()
 
-                val finalBody = "$cleanBody\n\n${signatureBuilder.toString().trim()}".trim()
+                val farewellLine = "Saludos cordiales."
+
+                val includeSignature = prefs.getBoolean("include_signature", true)
+
+                val finalBody = if (includeSignature) {
+                    val savedName = prefs.getString("signature_name", "").orEmpty().ifBlank { _uiState.value.signatureName }
+                    val savedPhone = prefs.getString("signature_phone", "").orEmpty().ifBlank { _uiState.value.signaturePhone }
+                    val savedEmail = prefs.getString("signature_email", "").orEmpty().ifBlank { _uiState.value.signatureEmail }
+
+                    val sigName = savedName.ifBlank {
+                        currentProfile?.name?.trim()?.takeIf {
+                            it.isNotBlank() && !it.equals("Usuario", ignoreCase = true)
+                        } ?: extractNameFromCv(cvText).orEmpty()
+                    }
+                    val sigPhone = savedPhone.ifBlank { extractPhoneFromCv(cvText).orEmpty() }
+                    val sigEmail = savedEmail.ifBlank { extractEmailFromCv(cvText) ?: _uiState.value.connectedAccountEmail.orEmpty() }
+
+                    val sigBuilder = StringBuilder("\n\n$farewellLine\n\n")
+                    if (sigName.isNotBlank()) sigBuilder.append(sigName).append("\n")
+                    if (sigPhone.isNotBlank()) sigBuilder.append(sigPhone).append("\n")
+                    if (sigEmail.isNotBlank()) sigBuilder.append(sigEmail).append("\n")
+
+                    "$cleanBody${sigBuilder.toString().trimEnd()}".trim()
+                } else {
+                    "$cleanBody\n\n$farewellLine".trim()
+                }
 
                 val recipient = assessment.vacancy.contactEmail
                 Log.d(TAG, "[DRAFT] Request sent to Gmail API")
@@ -667,6 +769,33 @@ class GmailViewModel @Inject constructor(
 
     fun deleteVacancy(id: Int) {
         viewModelScope.launch { vacancyDao.deleteVacancy(id) }
+    }
+
+    private fun extractNameFromCv(cvText: String): String? {
+        val lines = cvText.lines().map { it.trim() }.filter { it.isNotBlank() }.take(8)
+        for (line in lines) {
+            if (!line.contains("@") && !line.contains("http") && !line.contains("CV") &&
+                !line.contains("Curriculum", ignoreCase = true) && !line.contains("Hoja de Vida", ignoreCase = true) &&
+                !line.contains("Perfil", ignoreCase = true) && !line.contains("Experiencia", ignoreCase = true) &&
+                line.matches(Regex("^[A-ZÁÉÍÓÚÑa-záréiouseñ\\s.'-]{3,50}$"))
+            ) {
+                val words = line.split(Regex("\\s+"))
+                if (words.size in 2..4) return line
+            }
+        }
+        return null
+    }
+
+    private fun extractPhoneFromCv(cvText: String): String? {
+        if (cvText.isBlank()) return null
+        val match = Regex("(?<!\\d)(?:\\+?593|0)9\\d{8}(?!\\d)").find(cvText)?.value
+            ?: Regex("(?<!\\d)(?:\\+?\\d[\\d ()-]{7,}\\d)(?!\\d)").find(cvText)?.value
+        return match?.trim()
+    }
+
+    private fun extractEmailFromCv(cvText: String): String? {
+        if (cvText.isBlank()) return null
+        return Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}").find(cvText)?.value?.trim()?.lowercase()
     }
 
     private fun readVacancyImage(uriString: String): AiImagePayload {

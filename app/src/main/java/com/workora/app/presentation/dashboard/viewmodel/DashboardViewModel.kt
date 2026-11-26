@@ -3,6 +3,8 @@ package com.workora.app.presentation.dashboard.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.workora.app.domain.model.Profile
+import com.workora.app.domain.repository.GmailDraftRepository
+import com.workora.app.domain.repository.GmailSessionState
 import com.workora.app.domain.repository.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -12,7 +14,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    profileRepository: ProfileRepository
+    profileRepository: ProfileRepository,
+    gmailDraftRepository: GmailDraftRepository
 ) : ViewModel() {
 
     val profile: StateFlow<Profile?> = profileRepository.getProfile()
@@ -20,5 +23,12 @@ class DashboardViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = null
+        )
+
+    val gmailSession: StateFlow<GmailSessionState> = gmailDraftRepository.sessionState
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = GmailSessionState()
         )
 }

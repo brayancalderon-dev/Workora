@@ -255,11 +255,11 @@ class GeminiCompatibilityAnalyzer @Inject constructor(
             ScoringCriterion(dimension = dim, score = 70, applicable = true, evidence = "Evaluado en base al perfil del candidato")
         }
 
+        val literalSourceEmail = extractEmailFromText(vacancySource)?.let { normalizeHrEmail(it) }
         val aiEmail = vacancy.stringOrNull("contactEmail")?.takeIf { candidate ->
             Patterns.EMAIL_ADDRESS.matcher(candidate).matches()
-        }
-        val ocrEmail = extractEmailFromText(vacancySource)
-        val detectedEmail = aiEmail ?: ocrEmail
+        }?.let { normalizeHrEmail(it) }
+        val detectedEmail = literalSourceEmail ?: aiEmail
 
         return VacancyAssessment(
             vacancy = VacancyDetails(
@@ -320,22 +320,46 @@ class GeminiCompatibilityAnalyzer @Inject constructor(
 
     private fun extractEmailFromText(sourceText: String): String? {
         if (sourceText.isBlank()) return null
-        val matcher = Patterns.EMAIL_ADDRESS.matcher(sourceText)
-        val emails = mutableListOf<String>()
-        while (matcher.find()) {
-            val found = matcher.group().trim().lowercase()
-            if (found.contains("@") && !found.endsWith(".png") && !found.endsWith(".jpg") && !found.endsWith(".jpeg") && !found.endsWith(".webp")) {
-                emails.add(found)
-            }
-        }
-        if (emails.isEmpty()) return null
 
-        val priorityEmail = emails.firstOrNull { email ->
-            email.contains("seleccion") || email.contains("talento") || email.contains("reclutamiento") ||
-            email.contains("farmaenlace") || email.contains("empleo") || email.contains("cv") || email.contains("rh") ||
-            email.contains("postula") || email.contains("rrhh")
+        // Normalize common OCR artifacts like "rrhh @ uqaidev .com" -> "rrhh@uqaidev.com"
+        val normalizedSource = sourceText
+            .replace(Regex("([a-zA-Z0-9._%+-]+)\\s*@\\s*([a-zA-Z0-9.-]+)\\s*\\.\\s*([a-zA-Z]{2,})"), "$1@$2.$3")
+            .replace(Regex("([a-zA-Z0-9._%+-]+)\\s*@\\s*([a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})"), "$1@$2")
+
+        val standardRegex = Regex("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}")
+        val matches = standardRegex.findAll(normalizedSource)
+            .map { it.value.trim().lowercase() }
+            .filter { email ->
+                email.contains("@") && !email.endsWith(".png") && !email.endsWith(".jpg") && 
+                !email.endsWith(".jpeg") && !email.endsWith(".webp")
+            }
+            .distinct()
+            .toList()
+
+        if (matches.isEmpty()) return null
+
+        val priorityEmail = matches.firstOrNull { email ->
+            email.contains("rrhh") || email.contains("rh") || email.contains("uqaidev") || 
+            email.contains("seleccion") || email.contains("talento") || email.contains("reclutamiento") || 
+            email.contains("farmaenlace") || email.contains("empleo") || email.contains("cv") || 
+            email.contains("postula")
         }
-        return priorityEmail ?: emails.first()
+        val raw = priorityEmail ?: matches.first()
+        return normalizeHrEmail(raw)
+    }
+
+    private fun normalizeHrEmail(email: String): String {
+        val trimmed = email.trim().lowercase()
+        val parts = trimmed.split("@", limit = 2)
+        if (parts.size != 2) return trimmed
+        val localPart = parts[0]
+        val domain = parts[1]
+
+        val normalizedLocal = when (localPart) {
+            "rhh", "rrh" -> "rrhh"
+            else -> localPart
+        }
+        return "$normalizedLocal@$domain"
     }
 
     private fun sanitizeAssessment(assessment: VacancyAssessment): VacancyAssessment {
